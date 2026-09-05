@@ -7,6 +7,7 @@
 
 ### Fixed
 
+- **Collapsed thinking stays hidden** - hidden thinking placeholders wrapped for fullscreen mouse interaction no longer consume transcript rows.
 - **Grouped Bash commands show live progress** - collapsed running Bash rows display their latest non-empty output line beneath the command.
 - **Final timing status stays presentation-only** - the `Turn took` line renders as a styled TUI component without adding ANSI escapes or display text to persisted assistant messages.
 

@@ -1385,15 +1385,23 @@ function pluralizeTurns(n: number): string {
 	return `${n} turn${n === 1 ? "" : "s"}`;
 }
 
-function isHiddenThinkingPlaceholderText(child: unknown): child is InstanceType<typeof Text> {
-	if (!(child instanceof Text)) return false;
-	const plain = stripAnsi(String((child as any).text ?? "")).trim();
-	if (/^[✻∴]\s*Thinking/i.test(plain)) return true;
-	if (/^[✻∴]\s*Thought for/i.test(plain)) return true;
-	if (/^Thought for\b/i.test(plain)) return true;
-	if (/^Thinking\.\.\.$/i.test(plain)) return true;
-	if (/^Thinking…$/i.test(plain)) return true;
-	return /^Thinking:?\s*$/i.test(plain);
+function isHiddenThinkingPlaceholderText(component: unknown): boolean {
+	let child = component as any;
+	const seen = new Set<unknown>();
+	while (child && typeof child === "object" && !seen.has(child)) {
+		seen.add(child);
+		if (child instanceof Text) {
+			const plain = stripAnsi(String((child as any).text ?? "")).trim();
+			if (/^[✻∴]\s*Thinking/i.test(plain)) return true;
+			if (/^[✻∴]\s*Thought for/i.test(plain)) return true;
+			if (/^Thought for\b/i.test(plain)) return true;
+			if (/^Thinking\.\.\.$/i.test(plain)) return true;
+			if (/^Thinking…$/i.test(plain)) return true;
+			return /^Thinking:?\s*$/i.test(plain);
+		}
+		child = child.child;
+	}
+	return false;
 }
 
 function messageHasThinkingContent(message: any): boolean {
