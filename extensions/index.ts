@@ -690,7 +690,7 @@ function getToolArgSummary(tool: any): string {
 	if (name === "grep") return `"${summarizeText(args.pattern ?? "", 40)}"${args.path ? ` in ${args.path}` : ""}`;
 	if (name === "find") return `"${summarizeText(args.pattern ?? "", 40)}"${args.path ? ` in ${args.path}` : ""}`;
 	if (name === "ls") return shortPath(process.cwd(), args.path ?? ".");
-	return summarizeText(getStringArg(args, "path", "file_path", "url", "query", "name", "subject", "tool", "description", "prompt") || name, 72);
+	return summarizeGenericArgs(args);
 }
 
 function getToolCallLine(tool: any): string {
@@ -5258,6 +5258,13 @@ function getStringArg(args: any, ...keys: string[]): string {
 	return "";
 }
 
+function summarizeGenericArgs(args: any): string {
+	return summarizeText(getStringArg(
+		args, "path", "file_path", "url", "query", "name", "subject", "tool",
+		"description", "prompt", "message", "text", "question", "title",
+	), 72);
+}
+
 function getStringArrayArg(args: any, ...keys: string[]): string[] {
 	for (const key of keys) {
 		const value = args?.[key];
@@ -5828,10 +5835,7 @@ function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (pat
 			return taskIds.length === 1 ? taskIds[0] : `${taskIds[0]} ${theme.fg("muted", `(+${taskIds.length - 1} tasks)`)}`;
 		}
 		default:
-			return summarizeText(
-				getStringArg(args, "path", "file_path", "url", "query", "name", "subject", "tool", "description", "prompt") || humanizeToolName(name),
-				72,
-			);
+			return summarizeGenericArgs(args);
 	}
 }
 

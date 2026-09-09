@@ -1,4 +1,4 @@
-import { AssistantMessageComponent, CustomMessageComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
@@ -232,6 +232,37 @@ const neq = (a: string[], b: string[], label: string) => {
 		throw new Error("Hermes auto-review notice did not adopt thinking-text color without extra dimming");
 	}
 	console.log("OK  Hermes notice: thinking-text color without extra dimming");
+}
+
+// Generic tool headers preview recognized arguments without repeating the label.
+{
+	const cases: Array<[string, any, string]> = [
+		["suba_ping", { message: "Ready to merge. Approve integration?" }, "Suba Ping Ready to merge. Approve integration?"],
+		["notify_user", { text: "Build complete" }, "Notify User Build complete"],
+		["ask_review", { question: "Ship it?" }, "Ask Review Ship it?"],
+		["create_item", { title: "Fix rendering" }, "Create Item Fix rendering"],
+		["custom_tool", { message: "  ", text: "Useful fallback" }, "Custom Tool Useful fallback"],
+		["custom_tool", { path: "file.ts", message: "Other text" }, "Custom Tool file.ts"],
+		["suba_done", {}, "Suba Done"],
+		["custom_tool", { message: 42, token: "not a preview" }, "Custom Tool"],
+		["custom_tool", { message: "First line\nSecond line" }, "Custom Tool First line Second line"],
+		["custom_tool", { message: "x".repeat(100) }, `Custom Tool ${"x".repeat(69)}...`],
+	];
+	for (const [name, args, expected] of cases) {
+		const tool = new ToolExecutionComponent(name, `test-${name}`, args,
+			{ showImages: false }, undefined, { requestRender() {} } as any, process.cwd());
+		tool.setArgsComplete();
+		tool.updateResult({ content: [{ type: "text", text: "Waiting for input." }], details: {} } as any, false);
+		for (const expanded of [false, true]) {
+			tool.setExpanded(expanded);
+			const plain = tool.render(120).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trim());
+			const header = plain.find((line) => line.includes(expected));
+			if (!header || header.replace(/^[●○]\s*/, "") !== expected) {
+				throw new Error(`generic header mismatch: ${JSON.stringify({ name, expanded, expected, plain })}`);
+			}
+		}
+	}
+	console.log("OK  generic tools: meaningful argument previews and label-only fallback");
 }
 
 console.log("\nAll correctness checks passed.");
