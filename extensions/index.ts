@@ -34,6 +34,7 @@ import {
 	getImageDimensions,
 	imageFallback,
 	Markdown,
+	ProcessTerminal,
 	Spacer,
 	Text,
 	truncateToWidth,
@@ -1524,6 +1525,39 @@ function stripTransientMagicContextTags(text: string): string {
 	return text.replace(MAGIC_CONTEXT_TAG_LINE_PREFIX, "$1");
 }
 
+function sanitizeToolResultForDisplay(result: any): any {
+	if (!result || !Array.isArray(result.content)) return result;
+	let changed = false;
+	const content = result.content.map((block: any) => {
+		if (block && typeof block.text === "string") {
+			const stripped = stripTransientMagicContextTags(block.text);
+			if (stripped !== block.text) {
+				changed = true;
+				return { ...block, text: stripped };
+			}
+		}
+		return block;
+	});
+	return changed ? { ...result, content } : result;
+}
+
+const MAGIC_CONTEXT_TAG_TOKEN = /§\d+§/g;
+const TERMINAL_SCRUB_PATCH_FLAG = Symbol.for("pi-claude-style-tools:terminal-write-tag-scrub");
+
+function patchTerminalWriteTagScrubber(): void {
+	const proto = (ProcessTerminal as any)?.prototype;
+	if (!proto || proto[TERMINAL_SCRUB_PATCH_FLAG]) return;
+	const originalWrite = proto.write;
+	if (typeof originalWrite !== "function") return;
+	proto.write = function patchedTerminalWrite(this: any, data: any, ...rest: any[]) {
+		const clean = typeof data === "string" && data.includes("§")
+			? data.replace(MAGIC_CONTEXT_TAG_TOKEN, "")
+			: data;
+		return originalWrite.call(this, clean, ...rest);
+	};
+	proto[TERMINAL_SCRUB_PATCH_FLAG] = true;
+}
+
 function replaceInlineMath(text: string): string {
 	if (!hasInlineMathMarkers(text)) return text;
 	const withParens = text.replace(/\\\(([\s\S]*?)\\\)/g, (_match, body: string) => {
@@ -1817,7 +1851,7 @@ class ThinkingParagraph {
 		_markdownTheme: ConstructorParameters<typeof Markdown>[3],
 		_defaultTextStyle?: ConstructorParameters<typeof Markdown>[4],
 	) {
-		this.text = text;
+		this.text = stripTransientMagicContextTags(text);
 	}
 
 	private thinkingMarkdown(): InstanceType<typeof Markdown> {
@@ -1995,6 +2029,7 @@ function patchCustomMessageRender(): void {
 		syncToolBackgroundMode();
 		const cached = messageRenderCacheHit(this, width);
 		if (cached) return cached;
+		visitMarkdownDescendants(this, sanitizeMarkdownTextForDisplay);
 		const lines = originalRender.call(this, width);
 		if (!Array.isArray(lines)) return lines;
 		const result = isSubagentNotificationMessage(this?.message)
@@ -2073,13 +2108,33 @@ function borderedUserMessageLine(line: string, width: number): string {
 	return `${BORDER_COLOR}│${TRANSPARENT_RESET} ${content}${padding} ${BORDER_COLOR}│${TRANSPARENT_RESET}`;
 }
 
+function isMarkdownComponent(value: unknown): value is InstanceType<typeof Markdown> {
+	return value instanceof Markdown || (value as any)?.constructor?.name === "Markdown";
+}
+
 function visitMarkdownDescendants(root: unknown, visit: (md: InstanceType<typeof Markdown>) => void): void {
-	if (!root || typeof root !== "object") return;
-	const node = root as { children?: unknown[] };
-	for (const child of node.children ?? []) {
-		if (child instanceof Markdown) visit(child);
-		else visitMarkdownDescendants(child, visit);
-	}
+	const seen = new Set<unknown>();
+	const walk = (value: unknown): void => {
+		if (!value || typeof value !== "object" || seen.has(value)) return;
+		seen.add(value);
+		if (isMarkdownComponent(value)) {
+			visit(value);
+			return;
+		}
+		const node = value as { child?: unknown; children?: unknown[] };
+		if (node.child) walk(node.child);
+		for (const child of node.children ?? []) walk(child);
+	};
+	walk(root);
+}
+
+function sanitizeMarkdownTextForDisplay(markdown: InstanceType<typeof Markdown>): void {
+	const markdownAny = markdown as any;
+	if (typeof markdownAny.text !== "string") return;
+	const stripped = stripTransientMagicContextTags(markdownAny.text);
+	if (stripped === markdownAny.text) return;
+	markdownAny.text = stripped;
+	markdown.invalidate?.();
 }
 
 function patchUserMessageRender(): void {
@@ -2092,6 +2147,7 @@ function patchUserMessageRender(): void {
 		if (cached) return cached;
 		visitMarkdownDescendants(this, (child) => {
 			const markdownAny = child as any;
+			sanitizeMarkdownTextForDisplay(child);
 			makeMarkdownLinksCopySafe(child);
 			if (markdownAny.defaultTextStyle?.bgColor) {
 				markdownAny.defaultTextStyle.bgColor = undefined;
@@ -2121,6 +2177,7 @@ function patchAssistantMessages(): void {
 		proto.render = function patchedAssistantMessageRender(width: number) {
 			const cached = messageRenderCacheHit(this, width);
 			if (cached) return cached;
+			visitMarkdownDescendants(this, sanitizeMarkdownTextForDisplay);
 			const lines = originalRender.call(this, width);
 			if (!Array.isArray(lines) || lines.length === 0) return lines;
 			if ((this as any).hasToolCalls) {
@@ -2158,15 +2215,18 @@ function patchAssistantMessages(): void {
 		const mdTheme = (this as any).markdownTheme;
 		for (let i = container.children.length - 1; i >= 0; i--) {
 			const child = container.children[i];
-			if (child instanceof Markdown) {
-				const text = (child as any).text;
+			const inner = (child as any)?.child ?? child;
+			if (isMarkdownComponent(inner)) {
+				const text = (inner as any).text;
 				if (!text) continue;
-				const isThinking = !!(child as any).defaultTextStyle?.italic;
-				if (isThinking) {
-					const style = (child as any).defaultTextStyle;
-					container.children[i] = new ThinkingParagraph(text, mdTheme, style);
+				const isThinking = !!(inner as any).defaultTextStyle?.italic;
+				const replacement = isThinking
+					? new ThinkingParagraph(text, mdTheme, (inner as any).defaultTextStyle)
+					: new DottedParagraph(text, mdTheme);
+				if ((child as any)?.child !== undefined) {
+					(child as any).child = replacement;
 				} else {
-					container.children[i] = new DottedParagraph(text, mdTheme);
+					container.children[i] = replacement;
 				}
 			}
 		}
@@ -2328,16 +2388,28 @@ function patchToolExecutionRenderers(): void {
 
 	proto.getResultRenderer = function patchedGetResultRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : "";
+		let renderer: any;
 		if (toolName === "apply_patch") {
-			return (result: any, options: any, theme: Theme, ctx: any) =>
+			renderer = (result: any, options: any, theme: Theme, ctx: any) =>
 				renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx);
-		}
-		if (shouldUseGenericToolRenderer(toolName)) {
-			return (result: any, options: any, theme: Theme, ctx: any) =>
+		} else if (shouldUseGenericToolRenderer(toolName)) {
+			renderer = (result: any, options: any, theme: Theme, ctx: any) =>
 				renderGenericToolResult(toolName, result, options, theme, ctx);
+		} else {
+			renderer = typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined;
 		}
-		return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined;
+		if (typeof renderer !== "function") return renderer;
+		return (result: any, options: any, theme: Theme, ctx: any) =>
+			renderer(sanitizeToolResultForDisplay(result), options, theme, ctx);
 	};
+
+	const originalFormatToolExecution = proto.formatToolExecution;
+	if (typeof originalFormatToolExecution === "function") {
+		proto.formatToolExecution = function patchedFormatToolExecution(this: any, ...args: any[]) {
+			const formatted = originalFormatToolExecution.apply(this, args);
+			return typeof formatted === "string" ? stripTransientMagicContextTags(formatted) : formatted;
+		};
+	}
 
 	proto[TOOL_EXECUTION_PATCH_FLAG] = true;
 }
@@ -6022,6 +6094,7 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 // ===========================================================================
 
 export default function (pi: ExtensionAPI) {
+	patchTerminalWriteTagScrubber();
 	patchToolExecutionBackgroundSync();
 	patchToolRenderCacheInvalidation();
 	patchReadImageExpansion();

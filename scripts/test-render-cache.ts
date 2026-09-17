@@ -1,5 +1,5 @@
 import { AssistantMessageComponent, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
-import { Container } from "@earendil-works/pi-tui";
+import { Container, Markdown, ProcessTerminal } from "@earendil-works/pi-tui";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 initTheme("dark", false);
@@ -15,6 +15,27 @@ const fakePi = {
 	getAllTools() { return [...this.tools.values()]; },
 };
 const magicContextToolNames = ["ctx_search", "ctx_memory", "ctx_note", "ctx_expand", "ctx_reduce", "todowrite"];
+class TestMouseRegion {
+	constructor(public child: any) {}
+	render(width: number) { return this.child.render(width); }
+	invalidate() { this.child.invalidate?.(); }
+}
+let wrapAssistantMarkdown = false;
+const baseAssistantUpdateContent = AssistantMessageComponent.prototype.updateContent;
+AssistantMessageComponent.prototype.updateContent = function testWrappedUpdateContent(...args: any[]) {
+	const result = baseAssistantUpdateContent.apply(this, args as any);
+	if (wrapAssistantMarkdown) {
+		const children = (this as any).contentContainer?.children;
+		if (Array.isArray(children)) {
+			for (let i = 0; i < children.length; i++) {
+				if (children[i] instanceof Markdown || children[i]?.constructor?.name === "Markdown") {
+					children[i] = new TestMouseRegion(children[i]);
+				}
+			}
+		}
+	}
+	return result;
+};
 const oldMagicRenderCall = () => new Container();
 const oldMagicRenderResult = () => new Container();
 for (const name of magicContextToolNames) {
@@ -232,6 +253,62 @@ const neq = (a: string[], b: string[], label: string) => {
 		throw new Error("Hermes auto-review notice did not adopt thinking-text color without extra dimming");
 	}
 	console.log("OK  Hermes notice: thinking-text color without extra dimming");
+}
+
+// Transient context tags stay out of rendered tool output without changing stored results.
+{
+	const result = { content: [{ type: "text", text: "§42§ Hidden metadata\nVisible result" }], details: {} };
+	const tool = new ToolExecutionComponent("custom_tool", "tagged-result", {},
+		{ showImages: false }, undefined, { requestRender() {} } as any, process.cwd());
+	tool.setArgsComplete();
+	tool.updateResult(result as any, false);
+	const plain = tool.render(W).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+	if (plain.includes("§42§")) throw new Error("tool result exposed a transient context tag");
+	if (result.content[0].text !== "§42§ Hidden metadata\nVisible result") {
+		throw new Error("tool result sanitization mutated stored content");
+	}
+	console.log("OK  Magic Context results: tags hidden without stored-content mutation");
+}
+
+// The terminal writer removes tags from display-only surfaces that bypass renderers.
+{
+	const writes: string[] = [];
+	const originalWrite = process.stdout.write;
+	(process.stdout as any).write = (data: any) => { writes.push(String(data)); return true; };
+	try {
+		new ProcessTerminal().write("before §17§ after");
+	} finally {
+		(process.stdout as any).write = originalWrite;
+	}
+	if (writes.join("") !== "before  after") throw new Error("terminal writer did not scrub a context tag");
+	console.log("OK  Magic Context terminal output: tags scrubbed at write time");
+}
+
+// Wrapped Markdown keeps its wrapper while receiving the local paragraph renderer.
+{
+	const message = {
+		role: "assistant",
+		content: [{ type: "thinking", thinking: "Wrapped detailed reasoning." }],
+		stopReason: "pending",
+	};
+	const comp = new AssistantMessageComponent(undefined as any, false);
+	wrapAssistantMarkdown = true;
+	try {
+		(comp as any).updateContent(message);
+	} finally {
+		wrapAssistantMarkdown = false;
+	}
+	const container = (comp as any).contentContainer;
+	const wrapper = container.children.find((child: any) => child instanceof TestMouseRegion);
+	if (!wrapper) throw new Error("test setup did not wrap assistant Markdown");
+	if (wrapper.child instanceof Markdown || wrapper.child?.constructor?.name === "Markdown") {
+		throw new Error("wrapped Markdown did not receive the local paragraph renderer");
+	}
+	const plain = comp.render(W).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+	if (!plain.includes("∴") || !plain.includes("Wrapped detailed reasoning.")) {
+		throw new Error("wrapped thinking did not retain local expanded rendering");
+	}
+	console.log("OK  wrapped thinking: MouseRegion preserved with local rendering");
 }
 
 // Generic tool headers preview recognized arguments without repeating the label.
