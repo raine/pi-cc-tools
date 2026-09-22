@@ -33,11 +33,12 @@
     "extensions/bash-command.ts",
     "config/config.example.json",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "extensions/footer.ts"
   ],
   "scripts": {
-    "test": "node --experimental-strip-types --test scripts/bash-command.test.ts",
-    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/index.ts extensions/spinner.ts",
+    "test": "node --experimental-strip-types --test scripts/bash-command.test.ts scripts/footer.test.ts",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/index.ts extensions/spinner.ts extensions/footer.ts",
     "pack:dry-run": "npm pack --dry-run",
     "publish:dry-run": "npm publish --dry-run",
     "bench:tools": "bun scripts/benchmark-tools.ts"
@@ -54,7 +55,8 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts",
-      "./extensions/spinner.ts"
+      "./extensions/spinner.ts",
+      "./extensions/footer.ts"
     ]
   },
   "devDependencies": {

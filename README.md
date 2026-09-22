@@ -35,6 +35,18 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Extra detail toggle** with `Ctrl+Shift+O`, increasing expanded preview caps without making the default view heavy
 - **Global border patch** for all tool rows, including unknown/custom tools
 
+## Cached footer
+
+The footer keeps Pi's directory, usage, context, model, and extension status lines
+below the editor. Session statistics and rendered lines are cached so spinner
+animation does not repeatedly scan conversation history. The spinner stays above
+the editor.
+
+Use `/cc-footer off` to restore Pi's built-in footer, or `/cc-footer on` to enable
+caching again. The cached footer is enabled on startup and replaces any other
+custom footer installed before it. Settings changes are reflected on the next
+redraw, with up to a one-second delay.
+
 ## Configuration
 
 Set in `.pi/settings.json` or `~/.pi/settings.json`:
