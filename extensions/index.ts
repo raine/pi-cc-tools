@@ -2434,7 +2434,7 @@ function toolHeader(tool: string, summary: string, theme: Theme, prefix = "", tr
 	applyThemePaletteIfNeeded(theme);
 	const label = theme.fg("toolTitle", theme.bold(tool));
 	const body = summary
-		? `${label} ${WRAP_MARK}${theme.fg("accent", summary)}`
+		? `${label} ${WRAP_MARK}${theme.fg("mdCodeBlock", summary)}`
 		: label;
 	return trailing ? `${prefix}${body}${trailing}` : `${prefix}${body}`;
 }
