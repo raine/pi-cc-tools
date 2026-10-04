@@ -1,5 +1,5 @@
 import { AssistantMessageComponent, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, ProcessTerminal } from "@earendil-works/pi-tui";
+import { Container, Markdown, ProcessTerminal, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 initTheme("dark", false);
@@ -340,6 +340,87 @@ const neq = (a: string[], b: string[], label: string) => {
 		}
 	}
 	console.log("OK  generic tools: meaningful argument previews and label-only fallback");
+}
+
+// Codemode uses source headlines, nested-call details, and script output rather
+// than treating the result as an opaque generic tool response.
+{
+	const plain = (lines: string[]) => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+	const includes = (text: string, expected: string) => {
+		if (!text.includes(expected)) throw new Error(`codemode missing ${JSON.stringify(expected)}: ${text}`);
+	};
+	const code = '// @options: {"timeout_ms": 60000}\nconst results = await Promise.allSettled([\n  tools.read({path: "README.md"}),\n  tools.bash({command: "git status --short"})\n]);\ntext(results);';
+	const tool = new ToolExecutionComponent("codemode", "test-codemode", { code },
+		{ showImages: false }, undefined, { requestRender() {} } as any, process.cwd());
+	tool.setArgsComplete();
+	const result = {
+		content: [
+			{ type: "text", text: "Script completed\nWall time 0.5 seconds\nOutput:\n" },
+			{ type: "text", text: "printed script output" },
+		],
+		details: { calls: [
+			{ name: "read", args: '{"path":"README.md"}', status: "ok", durationMs: 69 },
+			{ name: "bash", args: '{"command":"git status --short"}', status: "running" },
+		] },
+	};
+	for (const handler of (fakePi as any).handlers.get("agent_start") ?? []) await handler({}, {});
+	tool.markExecutionStarted();
+	tool.updateResult(result as any, true);
+	includes(plain(tool.render(W)), "Bash git status --short");
+	const group = new Container();
+	group.addChild(tool);
+	const other = new ToolExecutionComponent("codemode", "other-codemode", { code: 'text("other script");' },
+		{ showImages: false }, undefined, { requestRender() {} } as any, process.cwd());
+	other.setArgsComplete();
+	other.updateResult({ content: [{ type: "text", text: "other output" }] } as any, false);
+	group.addChild(other);
+	includes(plain(group.render(W)), "const results = await Promise.allSettled([");
+	includes(plain(group.render(W)), 'text("other script");');
+	includes(plain(group.render(W)), "Bash git status --short");
+	tool.updateResult({ ...result, details: { calls: [
+		result.details.calls[0],
+		{ name: "bash", args: '{"command":"git status --short"}', status: "error", error: "permission denied", durationMs: 1500 },
+		{ name: "custom_tool", args: '{"query":"truncated...', status: "cancelled" },
+		{ name: "models.classify", args: "{}", status: "ok", cost: 0.004 },
+	] } } as any, false);
+	for (const expanded of [false, true]) {
+		tool.setExpanded(expanded);
+		const rendered = plain(tool.render(W));
+		includes(rendered, "Codemode const results = await Promise.allSettled([ · 6 lines");
+		includes(rendered, "Read README.md");
+		includes(rendered, "Bash git status --short (1s)");
+		includes(rendered, "printed script output");
+		includes(rendered, "truncated...");
+		includes(rendered, "$0.0040");
+		if (rendered.includes("Wall time")) throw new Error("codemode repeated script envelope");
+		if (expanded) {
+			includes(rendered, 'tools.read({path: "README.md"})');
+			includes(rendered, "permission denied");
+			for (const child of (group as any).children) child.setExpanded?.(true);
+			includes(plain(group.render(W)), "permission denied");
+		} else if (rendered.includes('tools.read({path: "README.md"})')) {
+			throw new Error("collapsed codemode included full source");
+		}
+		for (const width of [20, 40, 80]) {
+			for (const line of tool.render(width)) {
+				if (visibleWidth(line) > width) throw new Error(`codemode exceeded width ${width}`);
+			}
+		}
+	}
+	tool.updateResult({ content: [{ type: "text", text: "Script failed\nWall time 0.1 seconds\nOutput:\n" },
+		{ type: "text", text: "partial output\nScript error:\nboom" }],
+		details: { fullOutputPath: "/tmp/codemode-output.txt" }, isError: true } as any, false);
+	includes(plain(tool.render(W)), "Script failed");
+	includes(plain(tool.render(W)), "partial output");
+	includes(plain(tool.render(W)), "boom");
+	includes(plain(tool.render(W)), "Full output: /tmp/codemode-output.txt");
+	tool.updateResult({ content: [{ type: "text", text: "Invalid options" }], details: {}, isError: true } as any, false);
+	includes(plain(tool.render(W)), "Invalid options");
+	tool.updateArgs({ code: 'text("changed script");' });
+	tool.setArgsComplete();
+	includes(plain(tool.render(W)), 'text("changed script");');
+	for (const handler of (fakePi as any).handlers.get("agent_end") ?? []) await handler({}, {});
+	console.log("OK  codemode: source, nested calls, groups, partials, errors, cache invalidation, and narrow widths");
 }
 
 console.log("\nAll correctness checks passed.");

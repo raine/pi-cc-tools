@@ -617,6 +617,8 @@ function formatToolNameList(tools: any[]): string {
 
 function getRepeatedToolSubject(tools: any[], groupedName: string | undefined): string {
 	if (!groupedName || tools.length === 0) return "";
+	// Script headlines can match even when their nested work differs.
+	if (groupedName === "codemode") return "";
 	if (groupedName === "read") {
 		const paths = tools.map((tool) => String(tool?.args?.path ?? ""));
 		if (paths[0] && paths.every((path) => path === paths[0])) {
@@ -688,6 +690,7 @@ function getToolArgSummary(tool: any): string {
 		return value;
 	}
 	if (name === "bash") return buildBashCommandPresentation(args.command ?? "").headline;
+	if (name === "codemode") return summarizeCodemodeScript(args);
 	if (name === "grep") return `"${summarizeText(args.pattern ?? "", 40)}"${args.path ? ` in ${args.path}` : ""}`;
 	if (name === "find") return `"${summarizeText(args.pattern ?? "", 40)}"${args.path ? ` in ${args.path}` : ""}`;
 	if (name === "ls") return shortPath(process.cwd(), args.path ?? ".");
@@ -767,6 +770,14 @@ function getCollapsedToolEntryLine(entry: CollapsedToolEntry, width: number, gro
 
 function getCollapsedToolEntryLines(entry: CollapsedToolEntry, width: number, groupedLabel?: string): string[] {
 	const lines = [getCollapsedToolEntryLine(entry, width, groupedLabel)];
+	if (entry.name === "codemode") {
+		const running = [...entry.tools].reverse().find((tool) => getToolStatusForGroup(tool) === "pending");
+		if (running && liveToolPreviewEnabled() && liveToolPreviewLimit() > 0) {
+			lines.push(...getCodemodeCalls(running.result).slice(-liveToolPreviewLimit()).map((call) =>
+				formatCodemodeCall(call, undefined, false)));
+		}
+		return lines;
+	}
 	if (entry.name !== "bash") return lines;
 	const running = [...entry.tools].reverse().find((tool) => getToolStatusForGroup(tool) === "pending");
 	const latestOutput = running ? getLastBashOutputLine(getTextContent(running.result)) : undefined;
@@ -5191,6 +5202,7 @@ function genericToolLabel(name: string): string {
 }
 
 function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
+	if (name === "codemode") return renderCodemodeCall(args, theme, ctx);
 	syncToolCallStatus(ctx);
 	ctx.state._openAiPatchFiles = [];
 	// Agent / subagent tools get a size-breathing pending marker, not on/off ●.
@@ -5204,6 +5216,7 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 }
 
 function renderGenericToolResult(name: string, result: any, options: any, theme: Theme, ctx: any): Text {
+	if (name === "codemode") return renderCodemodeResult(result, options, theme, ctx);
 	if (isMcpToolName(name)) {
 		return renderMcpToolResult(result, !!options?.expanded, !!options?.isPartial, theme, ctx);
 	}
@@ -5215,6 +5228,90 @@ function renderGenericToolResult(name: string, result: any, options: any, theme:
 		theme,
 		ctx,
 	);
+}
+
+interface CodemodeCall {
+	name: string;
+	args: string;
+	status: "running" | "ok" | "error" | "cancelled";
+	durationMs?: number;
+	error?: string;
+	cost?: number;
+}
+
+function codemodeSource(args: any): string[] {
+	const code = typeof args?.code === "string" ? args.code : "";
+	return code.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+		.replace(/\t/g, "   ").trimEnd().split("\n");
+}
+
+function summarizeCodemodeScript(args: any): string {
+	const lines = codemodeSource(args);
+	const first = lines.find((line) => line.trim() && !line.trimStart().startsWith("//"));
+	const headline = summarizeText(first ?? "script", 100);
+	return lines.length > 1 ? `${headline} · ${lines.length} lines` : headline;
+}
+
+function getCodemodeCalls(result: any): CodemodeCall[] {
+	const calls = result?.details?.calls;
+	return Array.isArray(calls) ? calls.filter((call: any) => call && typeof call.name === "string") : [];
+}
+
+function formatCodemodeCall(call: CodemodeCall, theme: Theme | undefined, expanded: boolean): string {
+	const color = call.status === "error" ? "error" : call.status === "ok" ? "success" : "muted";
+	const ansi = call.status === "error" ? TOOL_STATUS_ERROR : call.status === "ok" ? TOOL_STATUS_SUCCESS : FG_DIM;
+	const paint = (text: string) => theme ? theme.fg(color, text) : `${ansi}${text}${TRANSPARENT_RESET}`;
+	const icon = call.status === "running" ? "…" : call.status === "cancelled" ? "⊘" : STATUS_DOT_FILLED;
+	let summary = typeof call.args === "string" ? call.args : "";
+	try {
+		const args = JSON.parse(summary);
+		summary = getToolArgSummary({ toolName: call.name, args }) || summary;
+	} catch { /* Truncated argument JSON is still useful as a text preview. */ }
+	let line = `${paint(icon)} ${humanizeToolName(call.name)}${summary ? ` ${summarizeText(summary, expanded ? 300 : 80)}` : ""}`;
+	if (typeof call.durationMs === "number") line += ` (${formatBashDuration(call.durationMs)})`;
+	if (typeof call.cost === "number" && call.cost > 0) line += ` $${call.cost.toPrecision(2)}`;
+	if (expanded && typeof call.error === "string" && call.error) line += `\n${paint(call.error)}`;
+	return line;
+}
+
+function renderCodemodeCall(args: any, theme: Theme, ctx: any): Text {
+	syncToolCallStatus(ctx);
+	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeCodemodeScript(args));
+	const header = toolHeader("Codemode", summary, theme, toolStatusDot(ctx, theme));
+	if (!ctx.expanded || !shouldRevealCallArgs(ctx)) return makeText(ctx.lastComponent, header);
+	const source = buildPreviewText(codemodeSource(args), true, theme, previewLimit(), undefined,
+		(line) => theme.fg("dim", line || " "));
+	return makeText(ctx.lastComponent, `${header}\n${withBranch(source, theme)}`);
+}
+
+function renderCodemodeResult(result: any, options: any, theme: Theme, ctx: any): Text {
+	const expanded = !!options?.expanded;
+	const partial = !!options?.isPartial;
+	if (partial) syncToolCallStatus(ctx);
+	else {
+		clearBlinkTimer(ctx);
+		setToolStatus(ctx, ctx.isError ? "error" : "success");
+	}
+	const calls = getCodemodeCalls(result);
+	const sections: string[] = [];
+	if (calls.length && (expanded || !partial || liveToolPreviewEnabled())) {
+		const limit = expanded ? expandedPreviewLimit() : partial ? liveToolPreviewLimit() : previewLimit();
+		const shown = limit > 0 ? calls.slice(-limit) : [];
+		if (shown.length < calls.length) sections.push(theme.fg("muted", `... (${calls.length - shown.length} earlier calls)`));
+		sections.push(...shown.map((call) => formatCodemodeCall(call, theme, expanded)));
+	}
+	if (!partial) {
+		// Pi stores the script envelope separately from the printed output blocks.
+		const [first, ...rest] = Array.isArray(result?.content) ? result.content : [];
+		const envelope = first?.type === "text" && /^Script (?:completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/.test(first.text);
+		const output = getTextContent({ content: envelope ? rest : result?.content }).trim();
+		sections.push(theme.fg(ctx.isError ? "error" : "muted", ctx.isError ? "Script failed" : "Script completed"));
+		if (output) sections.push(buildPreviewText(output.split("\n"), expanded, theme, previewLimit(), undefined,
+			(line) => theme.fg(ctx.isError ? "error" : "toolOutput", line || " ")));
+		const path = result?.details?.fullOutputPath;
+		if (typeof path === "string" && path) sections.push(theme.fg("muted", `Full output: ${path}`));
+	}
+	return makeText(ctx.lastComponent, sections.length ? withBranch(sections.join("\n"), theme) : "");
 }
 
 function getTextContent(result: any): string {
